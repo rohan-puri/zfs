@@ -65,6 +65,7 @@
 #include <sys/sa.h>
 #include <sys/zpl.h>
 #include "zfs_comutil.h"
+#include <linux/version.h>
 
 
 /*ARGSUSED*/
@@ -1125,12 +1126,34 @@ zfs_domount(struct super_block *sb, void *data, int silent)
 	sb->s_xattr = zpl_xattr_handlers;
 	sb->s_export_op = &zpl_export_operations;
 
+
 	/* Set features for file system. */
 	zfs_set_fuid_feature(zsb);
+	
+	/* Allocate a root inode for the filesystem. */
+	error = zfs_root(zsb, &root_inode);
+	if (error) {
+		(void) zfs_umount(sb);
+		goto out;
+	}
+
+	/* Allocate a root dentry for the filesystem */
+	sb->s_root = d_alloc_root(root_inode);
+	if (sb->s_root == NULL) {
+		(void) zfs_umount(sb);
+		error = ENOMEM;
+		goto out;
+	}
 
 	if (dmu_objset_is_snapshot(zsb->z_os)) {
 		uint64_t pval;
 
+		printk(" in zfs_domount \n");
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,38)
+
+//		sb->s_d_op = &zfs_dentry_ops;
+#endif
 		atime_changed_cb(zsb, B_FALSE);
 		readonly_changed_cb(zsb, B_TRUE);
 		if ((error = dsl_prop_get_integer(osname,"xattr",&pval,NULL)))
@@ -1154,25 +1177,9 @@ zfs_domount(struct super_block *sb, void *data, int silent)
 		bdi_put_sb(sb, &zsb->z_bdi);
 
 		error = zfs_sb_setup(zsb, B_TRUE);
-#ifdef HAVE_SNAPSHOT
 		(void) zfs_snap_create(zsb);
-#endif /* HAVE_SNAPSHOT */
 	}
 
-	/* Allocate a root inode for the filesystem. */
-	error = zfs_root(zsb, &root_inode);
-	if (error) {
-		(void) zfs_umount(sb);
-		goto out;
-	}
-
-	/* Allocate a root dentry for the filesystem */
-	sb->s_root = d_alloc_root(root_inode);
-	if (sb->s_root == NULL) {
-		(void) zfs_umount(sb);
-		error = ENOMEM;
-		goto out;
-	}
 out:
 	if (error) {
 		dmu_objset_disown(zsb->z_os, zsb);
