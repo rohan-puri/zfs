@@ -28,7 +28,7 @@
 #include <sys/zpl.h>
 #include <sys/dmu.h>
 #include <linux/version.h>
-
+#include <linux/snapshots_automount.h>
 
 struct inode *
 zfs_snap_linux_iget(struct super_block *sb, unsigned long ino);
@@ -37,34 +37,22 @@ static struct vfsmount *
 zfs_do_automount(struct dentry *mntpt)
 {
 	struct vfsmount *mnt = ERR_PTR(-ENOENT);
-        char *snapname = NULL;
-        char *zfs_fs_name = NULL;
-        //int rc = 0;
-        zfs_sb_t *zsb = ITOZSB(mntpt->d_inode);
+	char *snapname = NULL;
+	char *zfs_fs_name = NULL;
+	zfs_sb_t *zsb = ITOZSB(mntpt->d_inode);
 	
-	printk(" in zfs_do_automount \n");
-
-        ASSERT(mntpt->d_parent);
-        zfs_fs_name = kzalloc(MAXNAMELEN, KM_SLEEP);
-//        dput(mntpt);
-  //      mntput = dget(dentry);
-        dmu_objset_name(zsb->z_os, zfs_fs_name);
-        snapname = kzalloc(strlen(zfs_fs_name) +
-                                strlen(mntpt->d_name.name) + 2, KM_SLEEP);
-        snapname = strncpy(snapname, zfs_fs_name, strlen(zfs_fs_name) + 1);
-        snapname = strcat(snapname, "@");
-        snapname = strcat(snapname, mntpt->d_name.name);
-        mnt = vfs_kern_mount(&zpl_fs_type, 0, snapname, NULL);
-/*        mntget(mnt);
-        rc = PTR_ERR(mnt);
-        if (IS_ERR(mnt)) {
-                goto out_err;
-        }
-        mnt->mnt_mountpoint = dentry;
-        ASSERT(nd);
-*/
+	ASSERT(mntpt->d_parent);
+        
+	zfs_fs_name = kzalloc(MAXNAMELEN, KM_SLEEP);
+	dmu_objset_name(zsb->z_os, zfs_fs_name);
+	snapname = kzalloc(strlen(zfs_fs_name) +
+				strlen(mntpt->d_name.name) + 2, KM_SLEEP);
+	snapname = strncpy(snapname, zfs_fs_name, strlen(zfs_fs_name) + 1);
+	snapname = strcat(snapname, "@");
+	snapname = strcat(snapname, mntpt->d_name.name);
+	mnt = linux_kern_mount(&zpl_fs_type, 0, snapname, NULL);
 	kfree(zfs_fs_name);
-        kfree(snapname);
+	kfree(snapname);
 	return mnt;
 }
 
@@ -81,6 +69,7 @@ struct vfsmount *zfs_d_automount(struct path *path)
         }
         
         mntget(newmnt); /* prevent immediate expiration */
+// TODO
 /*        mnt_set_expiry(newmnt, &zfs_automount_list);
         schedule_delayed_work(&zfs_automount_task,
                               zfs_mountpoint_expiry_timeout);
@@ -94,29 +83,11 @@ const struct dentry_operations zfs_dentry_ops = {
 
 #else
 
-
 static void*
 zfs_snapshots_dir_mountpoint_follow_link(struct dentry *dentry, 
                                        struct nameidata *nd)
 {
 	struct vfsmount *mnt = ERR_PTR(-ENOENT);
-/*	char *snapname = NULL;
-	char *zfs_fs_name = NULL;
-	int rc = 0;
-	zfs_sb_t *zsb = ITOZSB(dentry->d_inode);
-
-	ASSERT(dentry->d_parent);
-	zfs_fs_name = kzalloc(MAXNAMELEN, KM_SLEEP);
-	dput(nd->path.dentry);
-	nd->path.dentry = dget(dentry);
-	dmu_objset_name(zsb->z_os, zfs_fs_name);
-	snapname = kzalloc(strlen(zfs_fs_name) +
-				strlen(dentry->d_name.name) + 2, KM_SLEEP);
-	snapname = strncpy(snapname, zfs_fs_name, strlen(zfs_fs_name) + 1);
-	snapname = strcat(snapname, "@");
-	snapname = strcat(snapname, dentry->d_name.name);
-	mnt = vfs_kern_mount(&zpl_fs_type, 0, snapname, NULL);
-*/
 	mnt = zfs_do_automount(dentry);
 	mntget(mnt);
 	rc = PTR_ERR(mnt);
@@ -125,13 +96,8 @@ zfs_snapshots_dir_mountpoint_follow_link(struct dentry *dentry,
 	}
 	mnt->mnt_mountpoint = dentry;
 	ASSERT(nd);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
-	rc = do_add_mount(mnt, nd,
+	rc = linux_add_mount(mnt, nd,
 				nd->path.mnt->mnt_flags | MNT_READONLY, NULL);
-#else
-	rc = do_add_mount(mnt, &nd->path,
-				nd->path.mnt->mnt_flags | MNT_READONLY, NULL);
-#endif
 	switch (rc) {
        
 	case 0:
@@ -168,9 +134,6 @@ out_err:
 	path_put(&nd->path);
 
 out:        
-/*	kfree(zfs_fs_name);
-	kfree(snapname);
-*/
 	return ERR_PTR(rc);
 }
 
@@ -438,5 +401,4 @@ zfs_snap_destroy(zfs_sb_t *zsb)
 	ASSERT(zsb->z_snap_linux.zsl_ctldir_dentry);
 	dput(zsb->z_snap_linux.zsl_ctldir_dentry);
 }
-
 
