@@ -65,6 +65,8 @@
 #include <sharefs/share.h>
 #include <sys/dmu_objset.h>
 #include <sys/fm/util.h>
+#include <sys/zpl.h>
+#include <linux/snapshots_automount.h>
 
 #include <linux/miscdevice.h>
 
@@ -2726,33 +2728,6 @@ zfs_ioc_get_fsacl(zfs_cmd_t *zc)
 	return (error);
 }
 
-#ifdef HAVE_SNAPSHOT
-/*
- * Search the vfs list for a specified resource.  Returns a pointer to it
- * or NULL if no suitable entry is found. The caller of this routine
- * is responsible for releasing the returned vfs pointer.
- */
-static vfs_t *
-zfs_get_vfs(const char *resource)
-{
-	struct vfs *vfsp;
-	struct vfs *vfs_found = NULL;
-
-	vfs_list_read_lock();
-	vfsp = rootvfs;
-	do {
-		if (strcmp(refstr_value(vfsp->vfs_resource), resource) == 0) {
-			mntget(vfsp);
-			vfs_found = vfsp;
-			break;
-		}
-		vfsp = vfsp->vfs_next;
-	} while (vfsp != rootvfs);
-	vfs_list_unlock();
-	return (vfs_found);
-}
-#endif /* HAVE_SNAPSHOT */
-
 /* ARGSUSED */
 static void
 zfs_create_cb(objset_t *os, void *arg, cred_t *cr, dmu_tx_t *tx)
@@ -3107,34 +3082,28 @@ int
 zfs_unmount_snap(const char *name, void *arg)
 {
 #ifdef HAVE_SNAPSHOT
-	vfs_t *vfsp = NULL;
-
+	zfs_sb_t	*zsb;
+	int		error;
 	if (arg) {
 		char *snapname = arg;
 		char *fullname = kmem_asprintf("%s@%s", name, snapname);
-		vfsp = zfs_get_vfs(fullname);
+		error = get_zfs_sb(fullname, &zsb);
+		ASSERT(!error);
 		strfree(fullname);
 	} else if (strchr(name, '@')) {
-		vfsp = zfs_get_vfs(name);
+		error = get_zfs_sb(name, &zsb);
 	}
 
-	if (vfsp) {
+	if (zsb) {
 		/*
 		 * Always force the unmount for snapshots.
 		 */
-		int flag = MS_FORCE;
-		int err;
-
-		if ((err = vn_vfswlock(vfsp->vfs_vnodecovered)) != 0) {
-			mntput(vfsp);
-			return (err);
-		}
-		mntput(vfsp);
-		if ((err = dounmount(vfsp, flag, kcred)) != 0)
-			return (err);
+		deactivate_super(zsb->z_sb);
+		linux_mark_mounts_for_expiry(&zfs_snapshots_automount_list);
 	}
-#endif /* HAVE_SNAPSHOT */
+#endif
 	return (0);
+
 }
 
 /*
@@ -3171,10 +3140,8 @@ zfs_ioc_destroy_snaps(zfs_cmd_t *zc)
 static int
 zfs_ioc_destroy(zfs_cmd_t *zc)
 {
-	int err;
+	int err = 0;
 	if (strchr(zc->zc_name, '@') && zc->zc_objset_type == DMU_OST_ZFS) {
-		err = zfs_unmount_snap(zc->zc_name, NULL);
-		if (err)
 			return (err);
 	}
 
